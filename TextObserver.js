@@ -4,6 +4,9 @@ class TextObserver {
     #observer;
 
     // Use static read-only properties as class constants
+    static get #IGNORED_NODES() {
+        return [Node.CDATA_SECTION_NODE, Node.PROCESSING_INSTRUCTION_NODE, Node.COMMENT_NODE];
+    }
     static get #IGNORED_TAGS() {
         return ['SCRIPT', 'STYLE', 'NOSCRIPT'];
     }
@@ -74,7 +77,7 @@ class TextObserver {
                                 addedNode.nodeValue = this.#callback(addedNode.nodeValue);
                                 processed.add(addedNode);
                             }
-                        } else {
+                        } else if (!TextObserver.#IGNORED_NODES.includes(addedNode.nodeType)) {
                             // If added node is not text, process subtree
                             TextObserver.#processNodes(addedNode, this.#callback, processed);
                         }
@@ -117,6 +120,7 @@ class TextObserver {
     static #valid(node) {
         return (
             node.parentNode !== null
+            && !TextObserver.#IGNORED_NODES.includes(node.nodeType)
             && !TextObserver.#IGNORED_TAGS.includes(node.parentNode.tagName)
             // Ignore contentEditable elements as touching them messes up the cursor position
             && !node.parentNode.isContentEditable
