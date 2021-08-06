@@ -16,62 +16,102 @@ class TextObserver {
         };
     }
 
+    // Keep track of all created observers to prevent infinite callbacks
+    static #observers = new Set();
+
     constructor(callback, target = document.body) {
         this.#target = target;
         this.#callback = callback;
-        TextObserver.#processNodes(target, callback);
+        TextObserver.#flushAndSleepDuring(TextObserver.#processNodes.bind(null, target, callback));
 
         const observer = new MutationObserver(mutations => {
-            // Disconnect observer before callback to prevent infinite recursion
-            this.#observer.disconnect();
-            this.#observerCallback(mutations);
-            this.#observer.observe(target, TextObserver.#CONFIG);
+            // Disconnect all other observers to prevent infinite callbacks
+            const records = [];
+            for (const value of TextObserver.#observers) {
+                // Process pending mutation records
+                records.push(value === this ? mutations : value.#observer.takeRecords());
+                value.#observer.disconnect();
+            }
+            let i = 0;
+            for (const value of TextObserver.#observers) {
+                value.#observerCallback(records[i++]);
+            }
+            TextObserver.#observers.forEach(value => value.#observer.observe(value.#target, TextObserver.#CONFIG));
         });
         observer.observe(target, TextObserver.#CONFIG);
         this.#observer = observer;
+
+        TextObserver.#observers.add(this);
     }
 
     disconnect(flush = true) {
         const mutations = this.#observer.takeRecords();
         this.#observer.disconnect();
+        TextObserver.#observers.delete(this);
         if (flush) {
-            this.#observerCallback(mutations);
+            TextObserver.#flushAndSleepDuring(() => {});
         }
     }
 
     reconnect(rerun = true) {
         if (rerun) {
-            TextObserver.#processNodes(this.#target, this.#callback);
+            TextObserver.#flushAndSleepDuring(TextObserver.#processNodes.bind(null, this.#target, this.#callback));
         }
         this.#observer.observe(this.#target, TextObserver.#CONFIG);
+        TextObserver.#observers.add(this);
     }
 
     #observerCallback(mutations) {
+        // Ensure each node only gets processed once
+        const processed = new Set();
         for (const mutation of mutations) {
-            const mutated = mutation.target;
+            const target = mutation.target;
             switch (mutation.type) {
                 case 'childList':
                     for (const addedNode of mutation.addedNodes) {
                         if (addedNode.nodeType === Node.TEXT_NODE) {
-                            if (TextObserver.#valid(addedNode)) {
+                            if (TextObserver.#valid(addedNode) && !processed.has(addedNode)) {
                                 addedNode.nodeValue = this.#callback(addedNode.nodeValue);
+                                processed.add(addedNode);
                             }
                         } else {
-                            // If added node is not text, process Text nodes in subtree
-                            TextObserver.#processText(addedNode, this.#callback);
+                            // If added node is not text, process subtree
+                            TextObserver.#processNodes(addedNode, this.#callback, processed);
                         }
                     }
                     break;
                 case 'characterData':
-                    if (TextObserver.#valid(mutated)) {
-                        mutated.nodeValue = this.#callback(mutated.nodeValue);
+                    if (TextObserver.#valid(target) && !processed.has(target)) {
+                        target.nodeValue = this.#callback(target.nodeValue);
+                        processed.add(target);
                     }
                     break;
                 case 'attributes':
-                    mutated[mutation.attributeName] = this.#callback(mutated[mutation.attributeName]);
+                    if (!processed.has(target)) {
+                        target[mutation.attributeName] = this.#callback(target[mutation.attributeName]);
+                        processed.add(target);
+                    }
                     break;
             }
         }
+    }
+
+    static #flushAndSleepDuring(callback) {
+        // Disconnect all other observers to prevent infinite callbacks
+        const records = [];
+        for (const value of TextObserver.#observers) {
+            // Process pending mutation records
+            records.push(value.#observer.takeRecords());
+            value.#observer.disconnect();
+        }
+        let i = 0;
+        for (const value of TextObserver.#observers) {
+            value.#observerCallback(records[i++]);
+        }
+        if (callback) {
+            callback();
+        }
+        TextObserver.#observers.forEach(value => value.#observer.observe(value.#target, TextObserver.#CONFIG));
     }
 
     static #valid(node) {
@@ -85,20 +125,32 @@ class TextObserver {
         );
     }
 
-    static #processNodes(root, callback) {
-        TextObserver.#processText(root, callback);
+    static #processNodes(root, callback, processed = null) {
+        TextObserver.#processText(root, callback, processed);
         // Manually process placeholder attribute of <input> and <textarea> elements
         // TODO: Is there a more elegant way to do this?
-        const elements = document.querySelectorAll('input, textarea');
-        elements.forEach(element => element.placeholder = callback(element.placeholder));
+        const elements = root.querySelectorAll('input, textarea');
+        elements.forEach(element => {
+            if (processed === null || !processed.has(element)) {
+                element.placeholder = callback(element.placeholder);
+                if (processed !== null) {
+                    processed.add(element);
+                }
+            }
+        });
     }
 
-    static #processText(root, callback) {
+    static #processText(root, callback, processed = null) {
         const nodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
             acceptNode: node => TextObserver.#valid(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
         });
         while (nodes.nextNode()) {
-            nodes.currentNode.nodeValue = callback(nodes.currentNode.nodeValue);
+            if (processed === null || !processed.has(nodes.currentNode)) {
+                nodes.currentNode.nodeValue = callback(nodes.currentNode.nodeValue);
+                if (processed !== null) {
+                    processed.add(nodes.currentNode);
+                }
+            }
         }
     }
 }
