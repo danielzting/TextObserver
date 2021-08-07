@@ -10,12 +10,19 @@ class TextObserver {
     static get #IGNORED_TAGS() {
         return ['SCRIPT', 'STYLE', 'NOSCRIPT'];
     }
+    static get #WATCHED_ATTRIBUTES() {
+        return {
+            'placeholder': ['input', 'textarea'],
+            'alt': ['img', 'area'],
+            'title': '*',
+        };
+    }
     static get #CONFIG() {
         return {
             subtree: true,
             childList: true,
             characterData: true,
-            attributeFilter: ['placeholder'], // For <input> and <textarea>
+            attributeFilter: Object.keys(TextObserver.#WATCHED_ATTRIBUTES),
         };
     }
 
@@ -90,9 +97,18 @@ class TextObserver {
                     }
                     break;
                 case 'attributes':
+                    const attribute = mutation.attributeName;
+                    const validElements = TextObserver.#WATCHED_ATTRIBUTES[attribute];
+                    // NOTE: This relies on the assumption that each element/tag/type has at most one watched attribute.
+                    // If this is updated to watch multiple attributes on a single tag, this logic MUST be rewritten!
                     if (!processed.has(target)) {
-                        target[mutation.attributeName] = this.#callback(target[mutation.attributeName]);
-                        processed.add(target);
+                        if (validElements === '*' || validElements.includes(target.tagName.toLowerCase())) {
+                            const result = this.#callback(target[attribute]);
+                            if (result !== '') {
+                                target[attribute] = result;
+                            }
+                            processed.add(target);
+                        }
                     }
                     break;
             }
@@ -111,9 +127,7 @@ class TextObserver {
         for (const value of TextObserver.#observers) {
             value.#observerCallback(records[i++]);
         }
-        if (callback) {
-            callback();
-        }
+        callback();
         TextObserver.#observers.forEach(value => value.#observer.observe(value.#target, TextObserver.#CONFIG));
     }
 
@@ -130,21 +144,7 @@ class TextObserver {
     }
 
     static #processNodes(root, callback, processed = null) {
-        TextObserver.#processText(root, callback, processed);
-        // Manually process placeholder attribute of <input> and <textarea> elements
-        // TODO: Is there a more elegant way to do this?
-        const elements = root.querySelectorAll('input, textarea');
-        elements.forEach(element => {
-            if (processed === null || !processed.has(element)) {
-                element.placeholder = callback(element.placeholder);
-                if (processed !== null) {
-                    processed.add(element);
-                }
-            }
-        });
-    }
-
-    static #processText(root, callback, processed = null) {
+        // Process valid Text nodes
         const nodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
             acceptNode: node => TextObserver.#valid(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
         });
@@ -155,6 +155,22 @@ class TextObserver {
                     processed.add(nodes.currentNode);
                 }
             }
+        }
+        // Process special attributes
+        for (const attribute of Object.keys(TextObserver.#WATCHED_ATTRIBUTES)) {
+            const validElements = TextObserver.#WATCHED_ATTRIBUTES[attribute];
+            const elements = root.querySelectorAll(validElements === '*' ? '*' : validElements.join(', '));
+            elements.forEach(element => {
+                if (processed === null || !processed.has(element)) {
+                    const result = callback(element[attribute] === undefined ? '' : element[attribute]);
+                    if (result !== '') {
+                        element[attribute] = result;
+                    }
+                    if (processed !== null) {
+                        processed.add(element);
+                    }
+                }
+            });
         }
     }
 }
