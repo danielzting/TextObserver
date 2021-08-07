@@ -14,7 +14,7 @@ class TextObserver {
         return {
             'placeholder': ['input', 'textarea'],
             'alt': ['img', 'area'],
-            'title': '*',
+            'title': ['*'],
         };
     }
     static get #CONFIG() {
@@ -29,10 +29,12 @@ class TextObserver {
     // Keep track of all created observers to prevent infinite callbacks
     static #observers = new Set();
 
-    constructor(callback, target = document.body) {
+    constructor(callback, target = document.body, processExisting = true) {
         this.#target = target;
         this.#callback = callback;
-        TextObserver.#flushAndSleepDuring(TextObserver.#processNodes.bind(null, target, callback));
+        if (processExisting) {
+            TextObserver.#flushAndSleepDuring(TextObserver.#processNodes.bind(null, target, callback));
+        }
 
         const observer = new MutationObserver(mutations => {
             // Disconnect all other observers to prevent infinite callbacks
@@ -63,8 +65,8 @@ class TextObserver {
         }
     }
 
-    reconnect(rerun = true) {
-        if (rerun) {
+    reconnect(reprocess = true) {
+        if (reprocess) {
             TextObserver.#flushAndSleepDuring(TextObserver.#processNodes.bind(null, this.#target, this.#callback));
         }
         this.#observer.observe(this.#target, TextObserver.#CONFIG);
@@ -78,35 +80,32 @@ class TextObserver {
             const target = mutation.target;
             switch (mutation.type) {
                 case 'childList':
-                    for (const addedNode of mutation.addedNodes) {
-                        if (addedNode.nodeType === Node.TEXT_NODE) {
-                            if (TextObserver.#valid(addedNode) && !processed.has(addedNode)) {
-                                addedNode.nodeValue = this.#callback(addedNode.nodeValue);
-                                processed.add(addedNode);
+                    for (const node of mutation.addedNodes) {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            if (TextObserver.#valid(node) && !processed.has(node)) {
+                                node.nodeValue = this.#callback(node.nodeValue);
+                                processed.add(node);
                             }
-                        } else if (!TextObserver.#IGNORED_NODES.includes(addedNode.nodeType)) {
+                        } else if (!TextObserver.#IGNORED_NODES.includes(node.nodeType)) {
                             // If added node is not text, process subtree
-                            TextObserver.#processNodes(addedNode, this.#callback, processed);
+                            TextObserver.#processNodes(node, this.#callback, processed);
                         }
                     }
                     break;
                 case 'characterData':
-                    if (TextObserver.#valid(target) && !processed.has(target)) {
+                    if (TextObserver.#valid(target) && !processed.has(addedNode)) {
                         target.nodeValue = this.#callback(target.nodeValue);
                         processed.add(target);
                     }
                     break;
                 case 'attributes':
                     const attribute = mutation.attributeName;
-                    const validElements = TextObserver.#WATCHED_ATTRIBUTES[attribute];
+                    const elements = TextObserver.#WATCHED_ATTRIBUTES[attribute];
                     // NOTE: This relies on the assumption that each element/tag/type has at most one watched attribute.
                     // If this is updated to watch multiple attributes on a single tag, this logic MUST be rewritten!
                     if (!processed.has(target)) {
-                        if (validElements === '*' || validElements.includes(target.tagName.toLowerCase())) {
-                            const result = this.#callback(target[attribute]);
-                            if (result !== '') {
-                                target[attribute] = result;
-                            }
+                        if (elements === ['*'] || elements.includes(target.tagName.toLowerCase())) {
+                            target[attribute] = this.#callback(target[attribute]);
                             processed.add(target);
                         }
                     }
@@ -145,30 +144,21 @@ class TextObserver {
 
     static #processNodes(root, callback, processed = null) {
         // Process valid Text nodes
-        const nodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-            acceptNode: node => TextObserver.#valid(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+        const nodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: node => (
+            TextObserver.#valid(node) && !processed?.has(node)) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
         });
         while (nodes.nextNode()) {
-            if (processed === null || !processed.has(nodes.currentNode)) {
-                nodes.currentNode.nodeValue = callback(nodes.currentNode.nodeValue);
-                if (processed !== null) {
-                    processed.add(nodes.currentNode);
-                }
-            }
+            nodes.currentNode.nodeValue = callback(nodes.currentNode.nodeValue);
+            processed?.add(nodes.currentNode);
         }
         // Process special attributes
-        for (const attribute of Object.keys(TextObserver.#WATCHED_ATTRIBUTES)) {
-            const validElements = TextObserver.#WATCHED_ATTRIBUTES[attribute];
-            const elements = root.querySelectorAll(validElements === '*' ? '*' : validElements.join(', '));
-            elements.forEach(element => {
-                if (processed === null || !processed.has(element)) {
-                    const result = callback(element[attribute] === undefined ? '' : element[attribute]);
-                    if (result !== '') {
-                        element[attribute] = result;
+        for (const [attribute, elements] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
+            root.querySelectorAll(elements.join(', ')).forEach(element => {
+                if (!processed?.has(element)) {
+                    if (element[attribute] !== undefined) {
+                        element[attribute] = callback(element[attribute]);
                     }
-                    if (processed !== null) {
-                        processed.add(element);
-                    }
+                    processed?.add(element);
                 }
             });
         }
