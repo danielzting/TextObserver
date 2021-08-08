@@ -31,7 +31,16 @@ class TextObserver {
         };
     }
 
-    constructor(callback, target = document.body, processExisting = true) {
+    constructor(callback, target = document, processExisting = true) {
+        // If target is entire document, manually process <title> and skip the rest of the <head>
+        // Processing the <head> can increase runtime by a factor of two
+        if (target === document) {
+            document.title = callback(document.title);
+            // Sometimes <body> may be missing, like when viewing an .SVG file in the browser
+            if (document.body !== null) {
+                target = document.body;
+            }
+        }
         this.#target = target;
         this.#callback = callback;
         if (processExisting) {
