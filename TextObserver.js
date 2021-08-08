@@ -3,11 +3,16 @@ class TextObserver {
     #callback;
     #observer;
 
+    // Keep track of all created observers to prevent infinite callbacks
+    static #observers = new Set();
+
     // Use static read-only properties as class constants
     static get #IGNORED_NODES() {
+        // Node types that implement the CharacterData interface but are not relevant or visible to the user
         return [Node.CDATA_SECTION_NODE, Node.PROCESSING_INSTRUCTION_NODE, Node.COMMENT_NODE];
     }
     static get #IGNORED_TAGS() {
+        // Text nodes that are not front-facing content
         return ['SCRIPT', 'STYLE', 'NOSCRIPT'];
     }
     static get #WATCHED_ATTRIBUTES() {
@@ -26,9 +31,6 @@ class TextObserver {
         };
     }
 
-    // Keep track of all created observers to prevent infinite callbacks
-    static #observers = new Set();
-
     constructor(callback, target = document.body, processExisting = true) {
         this.#target = target;
         this.#callback = callback;
@@ -37,10 +39,10 @@ class TextObserver {
         }
 
         const observer = new MutationObserver(mutations => {
-            // Disconnect all other observers to prevent infinite callbacks
             const records = [];
             for (const value of TextObserver.#observers) {
-                // Process pending mutation records
+                // This ternary is why this section does not use flushAndSleepDuring.
+                // It allows the nice-to-have property of callbacks being processed in the order they were declared.
                 records.push(value === this ? mutations : value.#observer.takeRecords());
                 value.#observer.disconnect();
             }
@@ -48,11 +50,12 @@ class TextObserver {
             for (const value of TextObserver.#observers) {
                 value.#observerCallback(records[i++]);
             }
+
             TextObserver.#observers.forEach(value => value.#observer.observe(value.#target, TextObserver.#CONFIG));
         });
         observer.observe(target, TextObserver.#CONFIG);
-        this.#observer = observer;
 
+        this.#observer = observer;
         TextObserver.#observers.add(this);
     }
 
@@ -93,7 +96,7 @@ class TextObserver {
                     }
                     break;
                 case 'characterData':
-                    if (TextObserver.#valid(target) && !processed.has(addedNode)) {
+                    if (TextObserver.#valid(target) && !processed.has(target)) {
                         target.nodeValue = this.#callback(target.nodeValue);
                         processed.add(target);
                     }
@@ -101,11 +104,12 @@ class TextObserver {
                 case 'attributes':
                     const attribute = mutation.attributeName;
                     const elements = TextObserver.#WATCHED_ATTRIBUTES[attribute];
+                    const value = target.getAttribute(attribute);
                     // NOTE: This relies on the assumption that each element/tag/type has at most one watched attribute.
                     // If this is updated to watch multiple attributes on a single tag, this logic MUST be rewritten!
-                    if (!processed.has(target)) {
-                        if (elements === ['*'] || elements.includes(target.tagName.toLowerCase())) {
-                            target[attribute] = this.#callback(target[attribute]);
+                    if (!processed.has(target) && value !== null) {
+                        if (elements[0] === '*' || elements.includes(target.tagName.toLowerCase())) {
+                            target.setAttribute(attribute, this.#callback(value));
                             processed.add(target);
                         }
                     }
@@ -118,10 +122,12 @@ class TextObserver {
         // Disconnect all other observers to prevent infinite callbacks
         const records = [];
         for (const value of TextObserver.#observers) {
-            // Process pending mutation records
+            // Collect pending mutation notifications
             records.push(value.#observer.takeRecords());
             value.#observer.disconnect();
         }
+        // This is in its own separate loop from the above because we want to disconnect everything before proceeding.
+        // Otherwise, the mutations in the callback may trigger the other observers.
         let i = 0;
         for (const value of TextObserver.#observers) {
             value.#observerCallback(records[i++]);
@@ -154,9 +160,12 @@ class TextObserver {
         // Process special attributes
         for (const [attribute, elements] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
             root.querySelectorAll(elements.join(', ')).forEach(element => {
+                // NOTE: This relies on the assumption that each element/tag/type has at most one watched attribute.
+                // If this is updated to watch multiple attributes on a single tag, this logic MUST be rewritten!
                 if (!processed?.has(element)) {
-                    if (element[attribute] !== undefined) {
-                        element[attribute] = callback(element[attribute]);
+                    const value = element.getAttribute(attribute);
+                    if (value !== null) {
+                        element.setAttribute(attribute, callback(value));
                     }
                     processed?.add(element);
                 }
