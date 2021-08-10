@@ -19,7 +19,8 @@ class TextObserver {
         // HTML attributes that get rendered as visible text
         return {
             'placeholder': ['input', 'textarea'],
-            'alt': ['img', 'area'],
+            'alt': ['img', 'area', 'input[type="image"]', '[role="img"]'],
+            'value': ['input:not([type])', 'input[type="text"]', 'input[type="button"]'],
             'title': ['*'],
         };
     }
@@ -55,14 +56,15 @@ class TextObserver {
         const observer = new MutationObserver(mutations => {
             const records = [];
             for (const value of TextObserver.#observers) {
-                // This ternary is why this section does not use flushAndSleepDuring.
-                // It allows the nice-to-have property of callbacks being processed in the order they were declared.
+                // This ternary is why this section does not use flushAndSleepDuring
+                // It allows the nice-to-have property of callbacks being processed in the order they were declared
                 records.push(value === this ? mutations : value.#observer.takeRecords());
                 value.#observer.disconnect();
             }
             let i = 0;
             for (const value of TextObserver.#observers) {
-                value.#observerCallback(records[i++]);
+                value.#observerCallback(records[i]);
+                i++;
             }
 
             TextObserver.#observers.forEach(value => value.#observer.observe(value.#target, TextObserver.#CONFIG));
@@ -91,9 +93,9 @@ class TextObserver {
     }
 
     #observerCallback(mutations) {
-        // NOTE: Sometimes, MutationRecords of type 'childList' have added nodes with overlapping subtrees.
-        // This can cause resource usage to explode with "recursive" replacements, e.g. expands -> physically expands.
-        // The processed set ensures that each added node is only processed once so the above doesn't happen.
+        // Sometimes, MutationRecords of type 'childList' have added nodes with overlapping subtrees
+        // This can cause resource usage to explode with "recursive" replacements, e.g. expands -> physically expands
+        // The processed set ensures that each added node is only processed once so the above doesn't happen
         const processed = new Set();
         for (const mutation of mutations) {
             const target = mutation.target;
@@ -118,17 +120,23 @@ class TextObserver {
                     }
                     break;
                 case 'attributes':
-                    const attribute = mutation.attributeName;
-                    const elements = TextObserver.#WATCHED_ATTRIBUTES[attribute];
-                    const value = target.getAttribute(attribute);
-                    // NOTE: This relies on the assumption that each element/tag/type has at most one watched attribute.
-                    // If this is updated to watch multiple attributes on a single tag, this logic MUST be rewritten!
-                    if (!processed.has(target) && value !== null) {
-                        if (elements[0] === '*' || elements.includes(target.tagName.toLowerCase())) {
-                            target.setAttribute(attribute, this.#callback(value));
-                            processed.add(target);
+                    if (processed.has(target)) {
+                        break;
+                    }
+                    // We must process every attribute at once because this code adds to processed
+                    for (const [attribute, selectors] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
+                        let matched = false;
+                        for (const selector of selectors) {
+                            if (target.matches(selector)) {
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if (matched) {
+                            target.setAttribute(attribute, this.#callback(target.getAttribute(mutation.attributeName)));
                         }
                     }
+                    processed.add(target);
                     break;
             }
         }
@@ -142,11 +150,12 @@ class TextObserver {
             records.push(value.#observer.takeRecords());
             value.#observer.disconnect();
         }
-        // This is in its own separate loop from the above because we want to disconnect everything before proceeding.
-        // Otherwise, the mutations in the callback may trigger the other observers.
+        // This is in its own separate loop from the above because we want to disconnect everything before proceeding
+        // Otherwise, the mutations in the callback may trigger the other observers
         let i = 0;
         for (const value of TextObserver.#observers) {
-            value.#observerCallback(records[i++]);
+            value.#observerCallback(records[i]);
+            i++;
         }
         callback();
         TextObserver.#observers.forEach(value => value.#observer.observe(value.#target, TextObserver.#CONFIG));
@@ -174,52 +183,45 @@ class TextObserver {
             nodes.currentNode.nodeValue = callback(nodes.currentNode.nodeValue);
             processed?.add(nodes.currentNode);
         }
-        // For keeping track of styles and IDs for CSS processing
-        let styles = document.createElement('style');
-        let generated = '';
-        document.head.appendChild(styles);
-        let i = 0;
+        // Use temporary set since instantly adding would prevent elements from having multiple attributes/CSS processed
+        const tempProcessed = new Set();
         // Process special attributes
-        for (const [attribute, elements] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
-            root.querySelectorAll(elements.join(', ')).forEach(element => {
-                // NOTE: This relies on the assumption that each element/tag/type has at most one watched attribute.
-                // If this is updated to watch multiple attributes on a single tag, this logic MUST be rewritten!
+        for (const [attribute, selectors] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
+            root.querySelectorAll(selectors.join(', ')).forEach(element => {
                 if (!processed?.has(element)) {
                     const value = element.getAttribute(attribute);
                     if (value !== null) {
                         element.setAttribute(attribute, callback(value));
                     }
-                    // HACK: This function is called here as well because this section of code adds to processed.
-                    // Otherwise, elements that get their attributes processed won't get their CSS processed.
-                    // TODO: consider switching the data structure for processed and refactoring the relevant logic
-                    generated += TextObserver.#processCSS(element, callback, i++);
-                    processed?.add(element);
+                    tempProcessed.add(element);
                 }
             });
         }
         // Process CSS generated text
+        const styleElement = document.createElement('style');
+        document.head.appendChild(styleElement);
+        let styles = '';
+        let i = 0;
         const elements = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
             acceptNode: node => !processed?.has(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
         });
         while (elements.nextNode()) {
-            generated += TextObserver.#processCSS(elements.currentNode, callback, i++);
-            processed?.add(elements.currentNode);
-        }
-        styles.textContent = generated;
-    }
-
-    static #processCSS(node, callback, i) {
-        // HACK: This whole function is an ugly workaround to process the CSS content property.
-        let styles = '';
-        for (const pseudoClass of TextObserver.#WATCHED_CSS) {
-            const content = window.getComputedStyle(node, pseudoClass).content;
-            if (/^['"].+["']$/.test(content)) {
-                if (node.id == '') {
-                    node.id = 'TextObserverHelperAssigned' + i;
+            const node = elements.currentNode;
+            for (const pseudoClass of TextObserver.#WATCHED_CSS) {
+                const content = window.getComputedStyle(node, pseudoClass).content;
+                if (/^'[^']+'$/.test(content) || /^"[^"]+"$/.test(content)) {
+                    if (node.id == '') {
+                        node.id = 'TextObserverHelperAssigned' + i;
+                    }
+                    styles += `#${node.id}${pseudoClass} { content: "${callback(content.substring(1, content.length - 1))}" !important }`;
+                    tempProcessed.add(node);
                 }
-                styles += `#${node.id}${pseudoClass} { content: "${callback(content.substring(1, content.length - 1))}" !important }`;
             }
+            i++;
         }
-        return styles;
+        styleElement.textContent = styles;
+        for (const element of tempProcessed) {
+            processed?.add(element);
+        }
     }
 }
