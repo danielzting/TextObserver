@@ -80,7 +80,7 @@ You don't even have to necessarily modify the text at all if you're doing someth
 ## FAQ
 
 ### Does `TextObserver` really see *everything*?
-Pretty much, I wrote `TextObserver` because the simpler solutions were still missing out some elements. `TextObserver` not only works on plain old text nodes but also HTML attributes that get rendered as text like `alt` text for images and tooltips with `title`, while ignoring elements that would break if touched such as `contentEditable` inputs. Refer to the known issues section for a list of exceptions.
+Pretty much, I wrote `TextObserver` because the simpler solutions were still missing out some elements. `TextObserver` not only works on plain old text nodes but also CSS generated content with pseudo-elements and HTML attributes that get rendered as text like `alt` text for images and tooltips with `title`, while ignoring elements that would break if touched such as `contentEditable` inputs. Refer to the known issues section for a list of exceptions.
 
 ### What about performance?
 There are two main pieces to `TextObserver`. One is the "observation" part, that is, the code that watches for added nodes or changes to existing text content and processes them. This step happens in time linear to the number of mutations and should use negligible resources.

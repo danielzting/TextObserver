@@ -16,11 +16,16 @@ class TextObserver {
         return ['SCRIPT', 'STYLE', 'NOSCRIPT'];
     }
     static get #WATCHED_ATTRIBUTES() {
+        // HTML attributes that get rendered as visible text
         return {
             'placeholder': ['input', 'textarea'],
             'alt': ['img', 'area'],
             'title': ['*'],
         };
+    }
+    static get #WATCHED_CSS() {
+        // CSS pseudo-elements that can have the content property set
+        return ['::before', '::after', '::marker'];
     }
     static get #CONFIG() {
         return {
@@ -86,7 +91,9 @@ class TextObserver {
     }
 
     #observerCallback(mutations) {
-        // Ensure each node only gets processed once
+        // NOTE: Sometimes, MutationRecords of type 'childList' have added nodes with overlapping subtrees.
+        // This can cause resource usage to explode with "recursive" replacements, e.g. expands -> physically expands.
+        // The processed set ensures that each added node is only processed once so the above doesn't happen.
         const processed = new Set();
         for (const mutation of mutations) {
             const target = mutation.target;
@@ -147,6 +154,7 @@ class TextObserver {
 
     static #valid(node) {
         return (
+            // Sometimes the node is removed from the document before we can process it, so check for valid parent
             node.parentNode !== null
             && !TextObserver.#IGNORED_NODES.includes(node.nodeType)
             && !TextObserver.#IGNORED_TAGS.includes(node.parentNode.tagName)
@@ -166,6 +174,11 @@ class TextObserver {
             nodes.currentNode.nodeValue = callback(nodes.currentNode.nodeValue);
             processed?.add(nodes.currentNode);
         }
+        // For keeping track of styles and IDs for CSS processing
+        let styles = document.createElement('style');
+        let generated = '';
+        document.head.appendChild(styles);
+        let i = 0;
         // Process special attributes
         for (const [attribute, elements] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
             root.querySelectorAll(elements.join(', ')).forEach(element => {
@@ -176,9 +189,37 @@ class TextObserver {
                     if (value !== null) {
                         element.setAttribute(attribute, callback(value));
                     }
+                    // HACK: This function is called here as well because this section of code adds to processed.
+                    // Otherwise, elements that get their attributes processed won't get their CSS processed.
+                    // TODO: consider switching the data structure for processed and refactoring the relevant logic
+                    generated += TextObserver.#processCSS(element, callback, i++);
                     processed?.add(element);
                 }
             });
         }
+        // Process CSS generated text
+        const elements = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+            acceptNode: node => !processed?.has(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+        });
+        while (elements.nextNode()) {
+            generated += TextObserver.#processCSS(elements.currentNode, callback, i++);
+            processed?.add(elements.currentNode);
+        }
+        styles.textContent = generated;
+    }
+
+    static #processCSS(node, callback, i) {
+        // HACK: This whole function is an ugly workaround to process the CSS content property.
+        let styles = '';
+        for (const pseudoClass of TextObserver.#WATCHED_CSS) {
+            const content = window.getComputedStyle(node, pseudoClass).content;
+            if (/^['"].+["']$/.test(content)) {
+                if (node.id == '') {
+                    node.id = 'TextObserverHelperAssigned' + i;
+                }
+                styles += `#${node.id}${pseudoClass} { content: "${callback(content.substring(1, content.length - 1))}" !important }`;
+            }
+        }
+        return styles;
     }
 }
