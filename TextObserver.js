@@ -2,6 +2,8 @@ class TextObserver {
     #targets;
     #callback;
     #observer;
+    #performanceOptions;
+    #processed;
 
     // Keep track of all created observers to prevent infinite callbacks
     static #observers = new Set();
@@ -37,7 +39,16 @@ class TextObserver {
         };
     }
 
-    constructor(callback, target = document, processExisting = true) {
+    constructor(callback, target = document, processExisting = true, performanceOptions = {
+        contentEditable: true,
+        attributes: true,
+        iconFonts: false,
+        cssContent: false,
+    }) {
+        this.#callback = callback;
+        this.#performanceOptions = performanceOptions;
+        this.#processed = new Set();
+
         // If target is entire document, manually process <title> and skip the rest of the <head>
         // Processing the <head> can increase runtime by a factor of two
         if (target === document) {
@@ -46,14 +57,15 @@ class TextObserver {
             if (document.body !== null) {
                 target = document.body;
             }
+
         }
         this.#targets = [target];
         [].slice.call(target.getElementsByTagName('*'), 0)
             .filter(element => element.shadowRoot)
             .forEach(element => this.#targets.push(element.shadowRoot));
-        this.#callback = callback;
+
         if (processExisting) {
-            TextObserver.#flushAndSleepDuring(TextObserver.#processNodes.bind(null, target, callback));
+            TextObserver.#flushAndSleepDuring(this.#processNodes.bind(this, target, callback));
         }
 
         const observer = new MutationObserver(mutations => {
@@ -91,7 +103,7 @@ class TextObserver {
 
     reconnect(reprocess = true) {
         if (reprocess) {
-            TextObserver.#flushAndSleepDuring(TextObserver.#processNodes.bind(null, this.#targets[0], this.#callback));
+            TextObserver.#flushAndSleepDuring(this.#processNodes.bind(this, this.#targets[0], this.#callback));
         }
         this.#targets.forEach(target => this.#observer.observe(target, TextObserver.#CONFIG));
         TextObserver.#observers.add(this);
@@ -101,35 +113,36 @@ class TextObserver {
         // Sometimes, MutationRecords of type 'childList' have added nodes with overlapping subtrees
         // This can cause resource usage to explode with "recursive" replacements, e.g. expands -> physically expands
         // The processed set ensures that each added node is only processed once so the above doesn't happen
-        const processed = new Set();
+        this.#processed.clear();
         for (const mutation of mutations) {
             const target = mutation.target;
             switch (mutation.type) {
                 case 'childList':
                     for (const node of mutation.addedNodes) {
                         if (node.nodeType === Node.TEXT_NODE) {
-                            if (TextObserver.#valid(node) && !processed.has(node)) {
+                            if (this.#valid(node) && !this.#processed.has(node)) {
                                 node.nodeValue = this.#callback(node.nodeValue);
-                                processed.add(node);
+                                this.#processed.add(node);
                             }
                         } else if (!TextObserver.#IGNORED_NODES.includes(node.nodeType)) {
                             // If added node is not text, process subtree
-                            TextObserver.#processNodes(node, this.#callback, processed);
+                            this.#processNodes(node, this.#callback);
                         }
                     }
                     break;
                 case 'characterData':
-                    if (TextObserver.#valid(target) && !processed.has(target)) {
+                    if (this.#valid(target) && !this.#processed.has(target)) {
                         target.nodeValue = this.#callback(target.nodeValue);
-                        processed.add(target);
+                        this.#processed.add(target);
                     }
                     break;
                 case 'attributes':
-                    if (processed.has(target)) {
+                    if (!this.#performanceOptions.attributes || this.#processed.has(target)) {
                         break;
                     }
                     // We must process every attribute at once because this code adds to processed
                     for (const [attribute, selectors] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
+                        // Find if element with changed attribute matches a watched selector
                         let matched = false;
                         for (const selector of selectors) {
                             if (target.matches(selector)) {
@@ -141,7 +154,7 @@ class TextObserver {
                             target.setAttribute(attribute, this.#callback(target.getAttribute(mutation.attributeName)));
                         }
                     }
-                    processed.add(target);
+                    this.#processed.add(target);
                     break;
             }
         }
@@ -168,75 +181,79 @@ class TextObserver {
         ));
     }
 
-    static #valid(node) {
+    #valid(node) {
         return (
             // Sometimes the node is removed from the document before we can process it, so check for valid parent
             node.parentNode !== null
             && !TextObserver.#IGNORED_NODES.includes(node.nodeType)
             && !TextObserver.#IGNORED_TAGS.includes(node.parentNode.tagName)
             // Ignore contentEditable elements as touching them messes up the cursor position
-            && !node.parentNode.isContentEditable
+            && (!this.#performanceOptions.contentEditable || !node.parentNode.isContentEditable)
             // HACK: workaround to avoid breaking icon fonts
-            && !window.getComputedStyle(node.parentNode).getPropertyValue('font-family').toUpperCase().includes('ICON')
+            && (!this.#performanceOptions.iconFonts || !window.getComputedStyle(node.parentNode).getPropertyValue('font-family').toUpperCase().includes('ICON'))
         );
     }
 
-    static #processNodes(root, callback, processed = null) {
+    #processNodes(root, callback) {
         // Process valid Text nodes
         const nodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: node => (
-            TextObserver.#valid(node) && !processed?.has(node)) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+            this.#valid(node) && !this.#processed.has(node)) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
         });
         while (nodes.nextNode()) {
             nodes.currentNode.nodeValue = callback(nodes.currentNode.nodeValue);
-            processed?.add(nodes.currentNode);
+            this.#processed.add(nodes.currentNode);
         }
         // Use temporary set since instantly adding would prevent elements from having multiple attributes/CSS processed
         const tempProcessed = new Set();
-        // Process special attributes
-        for (const [attribute, selectors] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
-            root.querySelectorAll(selectors.join(', ')).forEach(element => {
-                if (!processed?.has(element)) {
-                    const value = element.getAttribute(attribute);
-                    if (value !== null) {
-                        element.setAttribute(attribute, callback(value));
+        if (this.#performanceOptions.attributes) {
+            // Process special attributes
+            for (const [attribute, selectors] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
+                root.querySelectorAll(selectors.join(', ')).forEach(element => {
+                    if (!this.#processed.has(element)) {
+                        const value = element.getAttribute(attribute);
+                        if (value !== null) {
+                            element.setAttribute(attribute, callback(value));
+                        }
+                        tempProcessed.add(element);
                     }
-                    tempProcessed.add(element);
-                }
-            });
-        }
-        // Process CSS generated text
-        const styleElement = document.createElement('style');
-        document.head.appendChild(styleElement);
-        let styles = '';
-        let i = 0;
-        const elements = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
-            acceptNode: node => !processed?.has(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
-        });
-        while (elements.nextNode()) {
-            const node = elements.currentNode;
-            for (const pseudoClass of TextObserver.#WATCHED_CSS) {
-                const content = window.getComputedStyle(node, pseudoClass).content;
-                if (/^'[^']+'$/.test(content) || /^"[^"]+"$/.test(content)) {
-                    const newClass = 'TextObserverHelperAssigned' + i;
-                    node.classList.add(newClass);
-                    styles += `.${newClass}${pseudoClass} {
-                        content: "${callback(content.substring(1, content.length - 1))}" !important;
-                    }`;
-                    tempProcessed.add(node);
-                }
+                });
             }
-            i++;
         }
-        styleElement.textContent = styles;
-        for (const element of tempProcessed) {
-            processed?.add(element);
+        if (this.#performanceOptions.cssContent) {
+            // Process CSS generated text
+            const styleElement = document.createElement('style');
+            document.head.appendChild(styleElement);
+            let styles = '';
+            let i = 0;
+            const elements = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+                acceptNode: node => !this.#processed.has(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+            });
+            while (elements.nextNode()) {
+                const node = elements.currentNode;
+                for (const pseudoClass of TextObserver.#WATCHED_CSS) {
+                    const content = window.getComputedStyle(node, pseudoClass).content;
+                    if (/^'[^']+'$/.test(content) || /^"[^"]+"$/.test(content)) {
+                        const newClass = 'TextObserverHelperAssigned' + i;
+                        node.classList.add(newClass);
+                        styles += `.${newClass}${pseudoClass} {
+                            content: "${callback(content.substring(1, content.length - 1))}" !important;
+                        }`;
+                        tempProcessed.add(node);
+                    }
+                }
+                i++;
+            }
+            styleElement.textContent = styles;
+            for (const element of tempProcessed) {
+                this.#processed.add(element);
+            }
         }
         // Process open Shadow DOM subtrees
         const shadowRoots = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
             acceptNode: node => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
         });
         while (shadowRoots.nextNode()) {
-            TextObserver.#processNodes(shadowRoots.currentNode.shadowRoot, callback, processed);
+            this.#processNodes(shadowRoots.currentNode.shadowRoot, callback);
         }
     }
 }
