@@ -1,5 +1,5 @@
 class TextObserver {
-    #target;
+    #targets;
     #callback;
     #observer;
 
@@ -47,7 +47,10 @@ class TextObserver {
                 target = document.body;
             }
         }
-        this.#target = target;
+        this.#targets = [target];
+        [].slice.call(target.getElementsByTagName('*'), 0)
+            .filter(element => element.shadowRoot)
+            .forEach(element => this.#targets.push(element.shadowRoot));
         this.#callback = callback;
         if (processExisting) {
             TextObserver.#flushAndSleepDuring(TextObserver.#processNodes.bind(null, target, callback));
@@ -55,21 +58,23 @@ class TextObserver {
 
         const observer = new MutationObserver(mutations => {
             const records = [];
-            for (const value of TextObserver.#observers) {
+            for (const textObserver of TextObserver.#observers) {
                 // This ternary is why this section does not use flushAndSleepDuring
                 // It allows the nice-to-have property of callbacks being processed in the order they were declared
-                records.push(value === this ? mutations : value.#observer.takeRecords());
-                value.#observer.disconnect();
+                records.push(textObserver === this ? mutations : textObserver.#observer.takeRecords());
+                textObserver.#observer.disconnect();
             }
             let i = 0;
-            for (const value of TextObserver.#observers) {
-                value.#observerCallback(records[i]);
+            for (const textObserver of TextObserver.#observers) {
+                textObserver.#observerCallback(records[i]);
                 i++;
             }
 
-            TextObserver.#observers.forEach(value => value.#observer.observe(value.#target, TextObserver.#CONFIG));
+            TextObserver.#observers.forEach(textObserver => textObserver.#targets.forEach(
+                target => textObserver.#observer.observe(target, TextObserver.#CONFIG)
+            ));
         });
-        observer.observe(target, TextObserver.#CONFIG);
+        this.#targets.forEach(target => observer.observe(target, TextObserver.#CONFIG));
 
         this.#observer = observer;
         TextObserver.#observers.add(this);
@@ -86,9 +91,9 @@ class TextObserver {
 
     reconnect(reprocess = true) {
         if (reprocess) {
-            TextObserver.#flushAndSleepDuring(TextObserver.#processNodes.bind(null, this.#target, this.#callback));
+            TextObserver.#flushAndSleepDuring(TextObserver.#processNodes.bind(null, this.#targets[0], this.#callback));
         }
-        this.#observer.observe(this.#target, TextObserver.#CONFIG);
+        this.#targets.forEach(target => this.#observer.observe(target, TextObserver.#CONFIG));
         TextObserver.#observers.add(this);
     }
 
@@ -145,20 +150,22 @@ class TextObserver {
     static #flushAndSleepDuring(callback) {
         // Disconnect all other observers to prevent infinite callbacks
         const records = [];
-        for (const value of TextObserver.#observers) {
+        for (const textObserver of TextObserver.#observers) {
             // Collect pending mutation notifications
-            records.push(value.#observer.takeRecords());
-            value.#observer.disconnect();
+            records.push(textObserver.#observer.takeRecords());
+            textObserver.#observer.disconnect();
         }
         // This is in its own separate loop from the above because we want to disconnect everything before proceeding
         // Otherwise, the mutations in the callback may trigger the other observers
         let i = 0;
-        for (const value of TextObserver.#observers) {
-            value.#observerCallback(records[i]);
+        for (const textObserver of TextObserver.#observers) {
+            textObserver.#observerCallback(records[i]);
             i++;
         }
         callback();
-        TextObserver.#observers.forEach(value => value.#observer.observe(value.#target, TextObserver.#CONFIG));
+        TextObserver.#observers.forEach(textObserver => textObserver.#targets.forEach(
+            target => textObserver.#observer.observe(target, TextObserver.#CONFIG)
+        ));
     }
 
     static #valid(node) {
@@ -203,7 +210,7 @@ class TextObserver {
         let styles = '';
         let i = 0;
         const elements = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
-            acceptNode: node => !processed?.has(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+            acceptNode: node => !processed?.has(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
         });
         while (elements.nextNode()) {
             const node = elements.currentNode;
@@ -222,6 +229,13 @@ class TextObserver {
         styleElement.textContent = styles;
         for (const element of tempProcessed) {
             processed?.add(element);
+        }
+        // Process open Shadow DOM subtrees
+        const shadowRoots = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+            acceptNode: node => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+        });
+        while (shadowRoots.nextNode()) {
+            TextObserver.#processNodes(shadowRoots.currentNode.shadowRoot, callback, processed);
         }
     }
 }
