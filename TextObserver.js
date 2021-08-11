@@ -217,10 +217,11 @@ class TextObserver {
             for (const pseudoClass of TextObserver.#WATCHED_CSS) {
                 const content = window.getComputedStyle(node, pseudoClass).content;
                 if (/^'[^']+'$/.test(content) || /^"[^"]+"$/.test(content)) {
-                    if (node.id == '') {
-                        node.id = 'TextObserverHelperAssigned' + i;
-                    }
-                    styles += `#${node.id}${pseudoClass} { content: "${callback(content.substring(1, content.length - 1))}" !important }`;
+                    const newClass = 'TextObserverHelperAssigned' + i;
+                    node.classList.add(newClass);
+                    styles += `.${newClass}${pseudoClass} {
+                        content: "${callback(content.substring(1, content.length - 1))}" !important;
+                    }`;
                     tempProcessed.add(node);
                 }
             }
