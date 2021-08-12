@@ -1,9 +1,10 @@
 class TextObserver {
-    #targets;
+    #targets = new Set();
     #callback;
     #observer;
     #performanceOptions;
-    #processed;
+    #processed = new Set();
+    #connected = true;
 
     // Keep track of all created observers to prevent infinite callbacks
     static #observers = new Set();
@@ -39,6 +40,31 @@ class TextObserver {
         };
     }
 
+    static #staticConstructor = (() => {
+        Element.prototype._attachShadow = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function() {
+            let shadowRoot = this._attachShadow({ mode: 'open' });
+            let observers = [];
+            for (const textObserver of TextObserver.#observers) {
+                let found = false;
+                for (const target of textObserver.#targets) {
+                    if (target.contains(shadowRoot.host)) {
+                        observers.push(textObserver.#observer);
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) {
+                    textObserver.#targets.push(shadowRoot);
+                    textObserver.#processed.clear();
+                    textObserver.#processNodes(shadowRoot);
+                }
+            }
+            observers.forEach(observer => observer.observe(shadowRoot, TextObserver.#CONFIG));
+            return shadowRoot;
+        };
+    })();
+
     constructor(callback, target = document, processExisting = true, performanceOptions = {
         contentEditable: true,
         attributes: true,
@@ -47,7 +73,6 @@ class TextObserver {
     }) {
         this.#callback = callback;
         this.#performanceOptions = performanceOptions;
-        this.#processed = new Set();
 
         // If target is entire document, manually process <title> and skip the rest of the <head>
         // Processing the <head> can increase runtime by a factor of two
@@ -59,13 +84,13 @@ class TextObserver {
             }
 
         }
-        this.#targets = [target];
+        this.#targets.add(target);
         [].slice.call(target.getElementsByTagName('*'), 0)
             .filter(element => element.shadowRoot)
-            .forEach(element => this.#targets.push(element.shadowRoot));
+            .forEach(element => this.#targets.add(element.shadowRoot));
 
         if (processExisting) {
-            TextObserver.#flushAndSleepDuring(this.#processNodes.bind(this, target, callback));
+            TextObserver.#flushAndSleepDuring(() => this.#targets.forEach(target => this.#processNodes(target)));
         }
 
         const observer = new MutationObserver(mutations => {
@@ -93,17 +118,27 @@ class TextObserver {
     }
 
     disconnect(flush = true) {
-        const mutations = this.#observer.takeRecords();
-        this.#observer.disconnect();
-        TextObserver.#observers.delete(this);
+        if (!this.#connected) {
+            console.warn('This TextObserver instance is already disconnected!');
+            return;
+        }
+        this.#connected = false;
         if (flush) {
             TextObserver.#flushAndSleepDuring(() => {});
         }
+        const mutations = this.#observer.takeRecords();
+        this.#observer.disconnect();
+        TextObserver.#observers.delete(this);
     }
 
     reconnect(reprocess = true) {
+        if (this.#connected) {
+            console.warn('This TextObserver instance is already connected!');
+            return;
+        }
+        this.#connected = true;
         if (reprocess) {
-            TextObserver.#flushAndSleepDuring(this.#processNodes.bind(this, this.#targets[0], this.#callback));
+            TextObserver.#flushAndSleepDuring(() => this.#targets.forEach(target => this.#processNodes(target)));
         }
         this.#targets.forEach(target => this.#observer.observe(target, TextObserver.#CONFIG));
         TextObserver.#observers.add(this);
@@ -126,7 +161,23 @@ class TextObserver {
                             }
                         } else if (!TextObserver.#IGNORED_NODES.includes(node.nodeType)) {
                             // If added node is not text, process subtree
-                            this.#processNodes(node, this.#callback);
+                            this.#processNodes(node);
+                            // Process open Shadow DOM subtrees
+                            const shadowRoots = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT, {
+                                acceptNode: node => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+                            });
+                            let shadowRoot = shadowRoots.currentNode.shadowRoot;
+                            if (!shadowRoot) {
+                                shadowRoot = shadowRoots.nextNode();
+                            }
+                            while (shadowRoot) {
+                                if (!this.#targets.has(shadowRoot)) {
+                                    this.#targets.add(shadowRoot);
+                                    this.#processNodes(shadowRoot);
+                                    this.#observer.observe(shadowRoot, TextObserver.#CONFIG);
+                                }
+                                shadowRoot = shadowRoots.nextNode();
+                            }
                         }
                     }
                     break;
@@ -194,13 +245,13 @@ class TextObserver {
         );
     }
 
-    #processNodes(root, callback) {
+    #processNodes(root) {
         // Process valid Text nodes
         const nodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: node => (
             this.#valid(node) && !this.#processed.has(node)) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
         });
         while (nodes.nextNode()) {
-            nodes.currentNode.nodeValue = callback(nodes.currentNode.nodeValue);
+            nodes.currentNode.nodeValue = this.#callback(nodes.currentNode.nodeValue);
             this.#processed.add(nodes.currentNode);
         }
         // Use temporary set since instantly adding would prevent elements from having multiple attributes/CSS processed
@@ -212,7 +263,7 @@ class TextObserver {
                     if (!this.#processed.has(element)) {
                         const value = element.getAttribute(attribute);
                         if (value !== null) {
-                            element.setAttribute(attribute, callback(value));
+                            element.setAttribute(attribute, this.#callback(value));
                         }
                         tempProcessed.add(element);
                     }
@@ -236,7 +287,7 @@ class TextObserver {
                         const newClass = 'TextObserverHelperAssigned' + i;
                         node.classList.add(newClass);
                         styles += `.${newClass}${pseudoClass} {
-                            content: "${callback(content.substring(1, content.length - 1))}" !important;
+                            content: "${this.#callback(content.substring(1, content.length - 1))}" !important;
                         }`;
                         tempProcessed.add(node);
                     }
@@ -247,13 +298,6 @@ class TextObserver {
             for (const element of tempProcessed) {
                 this.#processed.add(element);
             }
-        }
-        // Process open Shadow DOM subtrees
-        const shadowRoots = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
-            acceptNode: node => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
-        });
-        while (shadowRoots.nextNode()) {
-            this.#processNodes(shadowRoots.currentNode.shadowRoot, callback);
         }
     }
 }
