@@ -40,10 +40,12 @@ class TextObserver {
         };
     }
 
+    // Override attachShadow to always force open mode so we can look inside them
     static #staticConstructor = (() => {
         Element.prototype._attachShadow = Element.prototype.attachShadow;
         Element.prototype.attachShadow = function() {
             let shadowRoot = this._attachShadow({ mode: 'open' });
+            // Find observers whose target includes the shadow
             let observers = [];
             for (const textObserver of TextObserver.#observers) {
                 let found = false;
@@ -162,7 +164,7 @@ class TextObserver {
                         } else if (!TextObserver.#IGNORED_NODES.includes(node.nodeType)) {
                             // If added node is not text, process subtree
                             this.#processNodes(node);
-                            // Process open Shadow DOM subtrees
+                            // Manually find and process open Shadow DOMs because MutationObserver doesn't pick them up
                             const shadowRoots = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT, {
                                 acceptNode: node => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
                             });
@@ -201,8 +203,9 @@ class TextObserver {
                                 break;
                             }
                         }
-                        if (matched) {
-                            target.setAttribute(attribute, this.#callback(target.getAttribute(mutation.attributeName)));
+                        const value = target.getAttribute(mutation.attributeName);
+                        if (matched && value) {
+                            target.setAttribute(attribute, this.#callback(value));
                         }
                     }
                     this.#processed.add(target);
