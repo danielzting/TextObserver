@@ -23,7 +23,7 @@ class TextObserver {
         return {
             'placeholder': ['input', 'textarea'],
             'alt': ['img', 'area', 'input[type="image"]', '[role="img"]'],
-            'value': ['input:not([type])', 'input[type="text"]', 'input[type="button"]'],
+            'value': ['input[type="button"]'],
             'title': ['*'],
         };
     }
@@ -57,7 +57,7 @@ class TextObserver {
                     }
                 }
                 if (found) {
-                    textObserver.#targets.push(shadowRoot);
+                    textObserver.#targets.add(shadowRoot);
                     textObserver.#processed.clear();
                     textObserver.#processNodes(shadowRoot);
                 }
@@ -83,6 +83,9 @@ class TextObserver {
             // Sometimes <body> may be missing, like when viewing an .SVG file in the browser
             if (document.body !== null) {
                 target = document.body;
+            } else {
+                console.warn('Document body does not exist, exiting...');
+                return;
             }
 
         }
@@ -128,7 +131,6 @@ class TextObserver {
         if (flush) {
             TextObserver.#flushAndSleepDuring(() => {});
         }
-        const mutations = this.#observer.takeRecords();
         this.#observer.disconnect();
         TextObserver.#observers.delete(this);
     }
@@ -140,7 +142,10 @@ class TextObserver {
         }
         this.#connected = true;
         if (reprocess) {
-            TextObserver.#flushAndSleepDuring(() => this.#targets.forEach(target => this.#processNodes(target)));
+            TextObserver.#flushAndSleepDuring(() => this.#targets.forEach(target => {
+                this.#processed.clear();
+                this.#processNodes(target);
+            }));
         }
         this.#targets.forEach(target => this.#observer.observe(target, TextObserver.#CONFIG));
         TextObserver.#observers.add(this);
@@ -151,6 +156,9 @@ class TextObserver {
         // This can cause resource usage to explode with "recursive" replacements, e.g. expands -> physically expands
         // The processed set ensures that each added node is only processed once so the above doesn't happen
         this.#processed.clear();
+        // We must save attribute mutations and process them at the end because adding them to processed would limit
+        // elements to one processed attribute per callback
+        const attributeMutations = [];
         for (const mutation of mutations) {
             const target = mutation.target;
             switch (mutation.type) {
@@ -190,26 +198,27 @@ class TextObserver {
                     }
                     break;
                 case 'attributes':
-                    if (!this.#performanceOptions.attributes || this.#processed.has(target)) {
-                        break;
+                    if (this.#performanceOptions.attributes && !this.#processed.has(target)) {
+                        attributeMutations.push(mutation);
                     }
-                    // We must process every attribute at once because this code adds to processed
-                    for (const [attribute, selectors] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
-                        // Find if element with changed attribute matches a watched selector
-                        let matched = false;
-                        for (const selector of selectors) {
-                            if (target.matches(selector)) {
-                                matched = true;
-                                break;
-                            }
-                        }
-                        const value = target.getAttribute(mutation.attributeName);
-                        if (matched && value) {
-                            target.setAttribute(attribute, this.#callback(value));
-                        }
-                    }
-                    this.#processed.add(target);
                     break;
+            }
+        }
+        for (const attributeMutation of attributeMutations) {
+            // Find if element with changed attribute matches a valid selector
+            const target = attributeMutation.target;
+            const attribute = attributeMutation.attributeName;
+            const selectors = TextObserver.#WATCHED_ATTRIBUTES[attribute];
+            let matched = false;
+            for (const selector of selectors) {
+                if (target.matches(selector)) {
+                    matched = true;
+                    break;
+                }
+            }
+            const value = target.getAttribute(attribute);
+            if (matched && value) {
+                target.setAttribute(attribute, this.#callback(value));
             }
         }
     }
