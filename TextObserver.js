@@ -56,7 +56,7 @@ class TextObserver {
                         break;
                     }
                 }
-                if (found) {
+                if (textObserver.#performanceOptions.shadows && found) {
                     textObserver.#targets.add(shadowRoot);
                     textObserver.#processed.clear();
                     textObserver.#processNodes(shadowRoot);
@@ -70,6 +70,7 @@ class TextObserver {
     constructor(callback, target = document, processExisting = true, performanceOptions = {
         contentEditable: true,
         attributes: true,
+        shadows: true,
         iconFonts: false,
         cssContent: false,
     }) {
@@ -90,9 +91,11 @@ class TextObserver {
 
         }
         this.#targets.add(target);
-        [].slice.call(target.getElementsByTagName('*'), 0)
-            .filter(element => element.shadowRoot)
-            .forEach(element => this.#targets.add(element.shadowRoot));
+        if (performanceOptions.shadows) {
+            [].slice.call(target.getElementsByTagName('*'), 0)
+                .filter(element => element.shadowRoot)
+                .forEach(element => this.#targets.add(element.shadowRoot));
+        }
 
         if (processExisting) {
             TextObserver.#flushAndSleepDuring(() => this.#targets.forEach(target => this.#processNodes(target)));
@@ -172,6 +175,9 @@ class TextObserver {
                         } else if (!TextObserver.#IGNORED_NODES.includes(node.nodeType)) {
                             // If added node is not text, process subtree
                             this.#processNodes(node);
+                            if (!this.#performanceOptions.shadows) {
+                                continue;
+                            }
                             // Manually find and process open Shadow DOMs because MutationObserver doesn't pick them up
                             const shadowRoots = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT, {
                                 acceptNode: node => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
