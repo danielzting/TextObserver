@@ -313,9 +313,9 @@ class TextObserver {
                 i++;
             }
             styleElement.textContent = styles;
-            for (const element of tempProcessed) {
-                this.#processed.add(element);
-            }
+        }
+        for (const element of tempProcessed) {
+            this.#processed.add(element);
         }
     }
 }
