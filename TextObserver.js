@@ -91,11 +91,6 @@ class TextObserver {
 
         }
         this.#targets.add(target);
-        if (performanceOptions.shadows) {
-            [].slice.call(target.getElementsByTagName('*'), 0)
-                .filter(element => element.shadowRoot)
-                .forEach(element => this.#targets.add(element.shadowRoot));
-        }
 
         if (processExisting) {
             TextObserver.#flushAndSleepDuring(() => this.#targets.forEach(target => this.#processNodes(target)));
@@ -175,25 +170,6 @@ class TextObserver {
                         } else if (!TextObserver.#IGNORED_NODES.includes(node.nodeType)) {
                             // If added node is not text, process subtree
                             this.#processNodes(node);
-                            if (!this.#performanceOptions.shadows) {
-                                continue;
-                            }
-                            // Manually find and process open Shadow DOMs because MutationObserver doesn't pick them up
-                            const shadowRoots = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT, {
-                                acceptNode: node => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
-                            });
-                            let shadowRoot = shadowRoots.currentNode.shadowRoot;
-                            if (!shadowRoot) {
-                                shadowRoot = shadowRoots.nextNode();
-                            }
-                            while (shadowRoot) {
-                                if (!this.#targets.has(shadowRoot)) {
-                                    this.#targets.add(shadowRoot);
-                                    this.#processNodes(shadowRoot);
-                                    this.#observer.observe(shadowRoot, TextObserver.#CONFIG);
-                                }
-                                shadowRoot = shadowRoots.nextNode();
-                            }
                         }
                     }
                     break;
@@ -316,6 +292,28 @@ class TextObserver {
         }
         for (const element of tempProcessed) {
             this.#processed.add(element);
+        }
+        if (this.#performanceOptions.shadows) {
+            // Manually find and process open Shadow DOMs because MutationObserver doesn't pick them up
+            const shadowRoots = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+                acceptNode: node => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+            });
+            let shadowRoot = shadowRoots.currentNode.shadowRoot;
+            // First node may or may not have a shadow root
+            if (!shadowRoot) {
+                shadowRoot = shadowRoots.nextNode();
+            }
+            while (shadowRoot) {
+                if (!this.#targets.has(shadowRoot)) {
+                    this.#targets.add(shadowRoot);
+                    this.#processNodes(shadowRoot);
+                    this.#targets.add(shadowRoot);
+                    if (this.#observer !== undefined) {
+                        this.#observer.observe(shadowRoot, TextObserver.#CONFIG);
+                    }
+                }
+                shadowRoot = shadowRoots.nextNode();
+            }
         }
     }
 }
