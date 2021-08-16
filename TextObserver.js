@@ -1,8 +1,13 @@
 class TextObserver {
+    // MutationObserver cannot detect Shadow DOMs so we must manually keep track of every shadow root and observe them
     #targets = new Set();
     #callback;
     #observer;
     #performanceOptions;
+    // Sometimes, MutationRecords of type 'childList' have added nodes with overlapping subtrees
+    // Nodes can also be removed and reattached from one parent to another
+    // This can cause resource usage to explode with "recursive" replacements, e.g. expands -> physically expands
+    // The processed set ensures that each added node is only processed once so the above doesn't happen
     #processed = new Set();
     #connected = true;
 
@@ -37,6 +42,7 @@ class TextObserver {
             childList: true,
             characterData: true,
             attributeFilter: Object.keys(TextObserver.#WATCHED_ATTRIBUTES),
+            characterDataOldValue: true,
         };
     }
 
@@ -58,7 +64,6 @@ class TextObserver {
                 }
                 if (textObserver.#performanceOptions.shadows && found) {
                     textObserver.#targets.add(shadowRoot);
-                    textObserver.#processed.clear();
                     textObserver.#processNodes(shadowRoot);
                 }
             }
@@ -141,7 +146,6 @@ class TextObserver {
         this.#connected = true;
         if (reprocess) {
             TextObserver.#flushAndSleepDuring(() => this.#targets.forEach(target => {
-                this.#processed.clear();
                 this.#processNodes(target);
             }));
         }
@@ -150,10 +154,6 @@ class TextObserver {
     }
 
     #observerCallback(mutations) {
-        // Sometimes, MutationRecords of type 'childList' have added nodes with overlapping subtrees
-        // This can cause resource usage to explode with "recursive" replacements, e.g. expands -> physically expands
-        // The processed set ensures that each added node is only processed once so the above doesn't happen
-        this.#processed.clear();
         // We must save attribute mutations and process them at the end because adding them to processed would limit
         // elements to one processed attribute per callback
         const attributeMutations = [];
@@ -174,7 +174,7 @@ class TextObserver {
                     }
                     break;
                 case 'characterData':
-                    if (this.#valid(target) && !this.#processed.has(target)) {
+                    if (this.#valid(target) && target.nodeValue !== mutation.oldValue) {
                         target.nodeValue = this.#callback(target.nodeValue);
                         this.#processed.add(target);
                     }
@@ -250,8 +250,8 @@ class TextObserver {
         }
         // Use temporary set since instantly adding would prevent elements from having multiple attributes/CSS processed
         const tempProcessed = new Set();
+        // Process special attributes
         if (this.#performanceOptions.attributes) {
-            // Process special attributes
             for (const [attribute, selectors] of Object.entries(TextObserver.#WATCHED_ATTRIBUTES)) {
                 root.querySelectorAll(selectors.join(', ')).forEach(element => {
                     if (!this.#processed.has(element)) {
@@ -264,8 +264,8 @@ class TextObserver {
                 });
             }
         }
+        // Process CSS generated text
         if (this.#performanceOptions.cssContent) {
-            // Process CSS generated text
             const styleElement = document.createElement('style');
             document.head.appendChild(styleElement);
             let styles = '';
@@ -293,8 +293,8 @@ class TextObserver {
         for (const element of tempProcessed) {
             this.#processed.add(element);
         }
+        // Manually find and process open Shadow DOMs because MutationObserver doesn't pick them up
         if (this.#performanceOptions.shadows) {
-            // Manually find and process open Shadow DOMs because MutationObserver doesn't pick them up
             const shadowRoots = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
                 acceptNode: node => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
             });
@@ -304,10 +304,12 @@ class TextObserver {
                 shadowRoot = shadowRoots.nextNode();
             }
             while (shadowRoot) {
+                // Add newly found shadow roots to targets
                 if (!this.#targets.has(shadowRoot)) {
                     this.#targets.add(shadowRoot);
                     this.#processNodes(shadowRoot);
                     this.#targets.add(shadowRoot);
+                    // This function is called in the constructor before the observer is defined, so check that
                     if (this.#observer !== undefined) {
                         this.#observer.observe(shadowRoot, TextObserver.#CONFIG);
                     }
