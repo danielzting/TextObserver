@@ -4,7 +4,7 @@
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/DanielZTing/TextObserver)
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/DanielZTing/TextObserver)
 
-`TextObserver` replaces text on a webpage with whatever you want.
+`TextObserver` replaces text on a webpage with whatever you want, including text injected dynamically after initial page load.
 
 ```javascript
 const badWordFilter = new TextObserver(text => text.replaceAll(/heck/gi, 'h*ck'));
@@ -15,7 +15,6 @@ Inspired by [`findAndReplaceDOMText`](https://github.com/padolsey/findAndReplace
 ## Installation
 
 All the code is self-contained in `TextObserver.js`. If you just want to try it out, paste the contents of `TextObserver.js` into the browser console. It is also available as an [NPM package](https://www.npmjs.com/package/textobserver).
-
 
 ## Usage
 
@@ -107,6 +106,10 @@ Narrowing down the target as much as possible and calling the constructor and `r
 - *`attributes` (default `true`)*: Process HTML attributes that get rendered by the browser as user-visible text such as image alt text, input placeholders, etc. Disabling this and `contentEditable` can cut runtime to about half that of the default config.
 - *`shadows` (default `true`)*: Search for and process open Shadow DOMs as well as override `Element.prototype.attachShadow()` to force Shadow DOMs created in the future to open mode. This option doesn't have a big impact on performance; it mostly exists if you want to respect the encapsulation of Shadow DOMs.
 
+## Hacking
+
+Issues and pull requests are welcome. I have written an [article](https://danielzting.github.io/2021/08/29/automatically-replacing-injected-text-in-dynamic-webpages) that goes over the basics of how the library works which may be useful.
+
 ## Known Issues
 
 `TextObserver` should work out of the box 98% of the time. Unfortunately, the modern web is an extraordinarily complex beast, and the following edge cases (hopefully rare for most users) exist.
@@ -115,10 +118,10 @@ Narrowing down the target as much as possible and calling the constructor and `r
 An observer created on a page cannot see inside an `<iframe>` from another domain due to the browser-enforced [same origin policy](https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy). However, if you are using this as part of a web extension's content script, you can set `"all_frames": true` in your [manifest](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/content_scripts) to tell the browser to inject the script into every frame's execution context.
 
 ### Misses closed Shadow DOMs
-A closed Shadow DOM is inaccessible to outside JavaScript. If you're making an extension, you could try [injecting the script into the page's execution context](https://stackoverflow.com/q/54954383/16458492) before any other scripts run to force Shadow DOMs to open mode (if you manage to get this to work, let me know and I'll put up example code).
+A closed Shadow DOM is inaccessible to outside JavaScript. If you're making an extension, you could try [injecting the script into the page's execution context](https://stackoverflow.com/q/54954383/16458492) before any other scripts run to force Shadow DOMs created in the future to open mode (if you manage to get this to work, let me know and I'll put up example code).
 
 ### Repeated "recursive" replacements
-If your "before" text is a substring of your "after" text (e.g. replacing ["expands" with "physically expands"](https://xkcd.com/1625/)) you may find that the replacement has happened more than once ("physically physically physically physically [...] expands"). Many modern sites chop and slice the DOM in all kinds of weird ways, and what looks like one mutation is internally interpreted as many by the code. Unfortunately I can only suggest to avoid such "recursive" substitutions.
+If your "before" text is a substring of your "after" text (e.g. replacing ["expands" with "physically expands"](https://xkcd.com/1625/)) you may find that the replacement has happened more than once ("physically physically [...] expands"). `TextObserver` contains mitigations for this but every site is coded in a different way and it is impossible to account for every case. For example, Wikipedia reads off the References section to create the tooltip citations that pop up when you hover over a boxed number, so the tooltip's text will inevitably be replaced twice.
 
 ### Messes with document editors
 Complex online code editors and word processors can exhibit quirks if `TextObserver` changes their contents, especially if the replacement is of a different length than the old value ("heck" to "heckerino!" is more likely to cause issues than "heck" to "h*ck"). I would suggest allowing the user to disable replacements on a site-by-site basis if applicable.
