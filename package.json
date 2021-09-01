@@ -1,6 +1,6 @@
 {
     "name": "textobserver",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "description": "Automatically watch and edit text in the DOM.",
     "license": "MIT",
     "repository": "DanielZTing/TextObserver",
