@@ -1,4 +1,4 @@
-class TextObserver {
+export default class TextObserver {
     // MutationObserver cannot detect Shadow DOMs so we must manually keep track of every shadow root and observe them
     #targets = new Set();
     #callback;

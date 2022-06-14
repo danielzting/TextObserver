@@ -1,12 +1,20 @@
 {
     "name": "textobserver",
-    "version": "2.0.0",
+    "type": "module",
+    "version": "3.0.0",
+    "main": "./TextObserver.js",
     "description": "Automatically watch and edit text in the DOM.",
     "license": "MIT",
     "repository": "DanielZTing/TextObserver",
     "browser": "TextObserver.js",
     "author": "Daniel Ting",
-    "bugs": "httsps://github.com/DanielZTing/TextObserver/issues",
+    "bugs": "https://github.com/DanielZTing/TextObserver/issues",
     "homepage": "https://github.com/DanielZTing/TextObserver",
-    "keywords": ["dom", "browser", "text", "replace", "observer"]
+    "keywords": [
+        "dom",
+        "browser",
+        "text",
+        "replace",
+        "observer"
+    ]
 }
